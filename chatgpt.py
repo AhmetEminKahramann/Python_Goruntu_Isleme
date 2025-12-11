@@ -6,30 +6,31 @@ import time
 import math
 from scipy.spatial.transform import Rotation as Rscipy
 from collections import deque
+
+
+def _compute_EAR(landmarks, inds, img_w, img_h):
+    # Compute Eye Aspect Ratio (EAR) for 6 eye landmarks.
+    # inds: [p1, p2, p3, p4, p5, p6]
+    pts = []
+    for i in inds:
+        lm = landmarks[i]
+        x = lm.x * img_w
+        y = lm.y * img_h
+        pts.append((x, y))
+    p1, p2, p3, p4, p5, p6 = pts
+    def dist(a, b):
+        return ((a[0]-b[0])**2 + (a[1]-b[1])**2)**0.5
+    vert1 = dist(p2, p6)
+    vert2 = dist(p3, p5)
+    horiz = dist(p1, p4)
+    if horiz < 1e-6:
+        return 0.0
+    ear = (vert1 + vert2) / (2.0 * horiz)
+    return ear
+
 import pyautogui
 import threading
 import keyboard
-
-# ==== Eye Open/Closed Detection (Independent) ====
-
-# Eye landmark indices for EAR (Eye Aspect Ratio)
-LEFT_EYE_IDX = [33, 160, 158, 133, 153, 144]
-RIGHT_EYE_IDX = [263, 387, 385, 362, 380, 373]
-
-def eye_aspect_ratio(landmarks, idxs, w, h):
-    # vertical distances
-    A = np.linalg.norm(np.array([landmarks[idxs[1]].x*w, landmarks[idxs[1]].y*h]) -
-                       np.array([landmarks[idxs[4]].x*w, landmarks[idxs[4]].y*h]))
-    B = np.linalg.norm(np.array([landmarks[idxs[2]].x*w, landmarks[idxs[2]].y*h]) -
-                       np.array([landmarks[idxs[5]].x*w, landmarks[idxs[5]].y*h]))
-
-    # horizontal distance
-    C = np.linalg.norm(np.array([landmarks[idxs[0]].x*w, landmarks[idxs[0]].y*h]) -
-                       np.array([landmarks[idxs[3]].x*w, landmarks[idxs[3]].y*h]))
-
-    ear = (A + B) / (2.0 * C)
-    return ear
-
 
 # Screen and mouse control setup (from old script)
 MONITOR_WIDTH, MONITOR_HEIGHT = pyautogui.size()
@@ -750,40 +751,35 @@ while cap.isOpened():
     results = face_mesh.process(frame_rgb)
 
     if results.multi_face_landmarks:
-        
-        # ===== Independent Eye Open/Closed Detection =====
+        face_landmarks = results.multi_face_landmarks[0].landmark
 
-        leftEAR = eye_aspect_ratio(face_landmarks, LEFT_EYE_IDX, w, h)
-        rightEAR = eye_aspect_ratio(face_landmarks, RIGHT_EYE_IDX, w, h)
-
+        # --- START: Added EAR (Eye Aspect Ratio) per-eye open/closed detection ---
+        # Left eye indices: 33,160,158,133,153,144
+        # Right eye indices:263,387,385,362,380,373
+        left_eye_inds = [33, 160, 158, 133, 153, 144]
+        right_eye_inds = [263, 387, 385, 362, 380, 373]
         EAR_THRESHOLD = 0.21
 
-        left_open = leftEAR > EAR_THRESHOLD
-        right_open = rightEAR > EAR_THRESHOLD
+        try:
+            left_ear = _compute_EAR(face_landmarks, left_eye_inds, w, h)
+            right_ear = _compute_EAR(face_landmarks, right_eye_inds, w, h)
+        except Exception:
+            left_ear = 0.0
+            right_ear = 0.0
 
-        if left_open:
-            left_text = "LEFT: OPEN"
-            left_color = (0, 255, 0)
-        else:
-            left_text = "LEFT: CLOSED"
-            left_color = (0, 0, 255)
+        left_state = "OPEN" if left_ear > EAR_THRESHOLD else "CLOSED"
+        right_state = "OPEN" if right_ear > EAR_THRESHOLD else "CLOSED"
 
-        if right_open:
-            right_text = "RIGHT: OPEN"
-            right_color = (0, 255, 0)
-        else:
-            right_text = "RIGHT: CLOSED"
-            right_color = (0, 0, 255)
+        # Draw the results on the frame. Use distinct positions so they don't overlap.
+        try:
+            cv2.putText(frame, f"LEFT: {left_state}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                        (0, 255, 0) if left_state == "OPEN" else (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame, f"RIGHT: {right_state}", (w - 220, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                        (0, 255, 0) if right_state == "OPEN" else (0, 0, 255), 2, cv2.LINE_AA)
+        except Exception:
+            pass
+        # --- END: Added EAR detection ---
 
-        cv2.putText(frame, left_text, (30, 80),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.7, left_color, 2)
-
-        cv2.putText(frame, right_text, (30, 120),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.7, right_color, 2)
-        
-
-          
-        face_landmarks = results.multi_face_landmarks[0].landmark
 
         # Index for left iris center point (from MediaPipe's iris model)
         left_iris_idx = 468

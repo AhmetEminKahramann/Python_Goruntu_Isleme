@@ -1,17 +1,3 @@
-# --- Eye landmark indices for EAR calculation ---
-LEFT_EYE_INDICES = [33, 160, 158, 133, 153, 144]  # [left, top1, top2, right, bottom1, bottom2]
-RIGHT_EYE_INDICES = [263, 387, 385, 362, 380, 373]  # [left, top1, top2, right, bottom1, bottom2]
-
-def eye_aspect_ratio(landmarks, indices, w, h):
-    # Get the 2D coordinates for the required landmarks
-    pts = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in indices]
-    # EAR formula: (||top1-bottom1|| + ||top2-bottom2||) / (2 * ||left-right||)
-    A = np.linalg.norm(np.array(pts[1]) - np.array(pts[4]))
-    B = np.linalg.norm(np.array(pts[2]) - np.array(pts[5]))
-    C = np.linalg.norm(np.array(pts[0]) - np.array(pts[3]))
-    # Avoid division by zero
-    ear = (A + B) / (2.0 * C) if C != 0 else 0.0
-    return ear
 import cv2
 import numpy as np
 import os
@@ -95,19 +81,12 @@ nose_indices = [4, 45, 275, 220, 440, 1, 5, 51, 281, 44, 274, 241,
                 3, 248]
 
 # ===== NEW: File writing for screen position =====
-# Changed path to ASCII-only to prevent errors due to non-standard characters
-screen_position_file = r"C:\Temp\ekranyakalama.txt"
+screen_position_file = r"C:\Users\ahmet\Desktop\Pythongörüntüisleme\ekranyakalama.txt"
 
 def write_screen_position(x, y):
     """Write screen position to file, overwriting the same line"""
-    try:
-        # Use 'w' to overwrite the content
-        with open(screen_position_file, 'w') as f:
-            f.write(f"{x},{y}\n")
-    except Exception as e:
-        # Simple error handling for file writing issues
-        # print(f"Error writing to file: {e}") 
-        pass 
+    with open(screen_position_file, 'w') as f:
+        f.write(f"{x},{y}\n")
 
 def _rot_x(a):
     ca, sa = math.cos(a), math.sin(a)
@@ -353,9 +332,7 @@ def compute_and_draw_coordinate_box(frame, face_landmarks, indices, ref_matrix_c
 
     # Convert to Euler angles and re-construct rotation matrix (optional but clarifies the transform)
     r = Rscipy.from_matrix(eigvecs)
-    # The original code's euler order 'zyx' might be wrong for head pose, but preserving it:
     roll, pitch, yaw = r.as_euler('zyx', degrees=False)
-    # Yaw and Roll scaling (preserving original logic)
     yaw *= 1
     roll *= 1
     R_final = Rscipy.from_euler('zyx', [roll, pitch, yaw]).as_matrix()
@@ -374,7 +351,6 @@ def compute_and_draw_coordinate_box(frame, face_landmarks, indices, ref_matrix_c
 
     # Draw X (green), Y (blue), Z (red) axes
     axis_length = size * 1.2
-    # R[:, 0] = right (X), -R[:, 1] = up (Y), -R[:, 2] = forward (Z)
     axis_dirs = [R_final[:, 0], -R_final[:, 1], -R_final[:, 2]]
     axis_colors = [(0, 255, 0), (0, 0, 255), (255, 0, 0)]
 
@@ -413,7 +389,7 @@ def convert_gaze_to_screen_coordinates(combined_gaze_direction, calibration_offs
     yaw_deg = np.degrees(yaw_rad)
     pitch_deg = np.degrees(pitch_rad)
 
-    # Convert left rotations to 0-180 (from old script logic, this logic is non-standard but preserved)
+    # Convert left rotations to 0-180 (from old script logic)
     if yaw_deg < 0:
         yaw_deg = -(yaw_deg)
     elif yaw_deg > 0:
@@ -717,7 +693,7 @@ def render_debug_view_orbit(
         cv2.putText(debug, text, (x0, y), font, font_scale, (200, 200, 200), thickness, cv2.LINE_AA)
 
 
-    cv2.imshow("Debug Ekrani", debug)
+    cv2.imshow("Head/Eye Debug", debug)
 
 
 
@@ -742,8 +718,50 @@ right_sphere_locked = False
 right_sphere_local_offset = None
 right_calibration_nose_scale = None
 
-# EAR Threshold
-EAR_THRESHOLD = 0.23 # Standard threshold for eye closure
+
+# ***************************************************************
+# ********** YENI: EAR (Eye Aspect Ratio) Fonksiyonu ************
+# ***************************************************************
+
+def eye_aspect_ratio(eye_points):
+    """
+    Eye Aspect Ratio (EAR) hesaplama:
+    ||p2-p4|| + ||p3-p5||
+    ---------------------
+           2 * ||p1-p6||
+    p1: yatay uç (yanak)
+    p6: yatay uç (burun)
+    p2, p3: dikey uçlar (üst)
+    p4, p5: dikey uçlar (alt)
+    MediaPipe FaceMesh için:
+    Sol Göz: 33, 160, 158, 133, 153, 144
+    Sağ Göz: 263, 387, 385, 362, 380, 373
+    """
+    # 3D noktaları 2D koordinatlarına dönüştür
+    p = [np.array([pt.x * w, pt.y * h], dtype=float) for pt in eye_points]
+
+    # Dikey mesafeler (p2-p4 ve p3-p5)
+    A = np.linalg.norm(p[1] - p[5]) # 160 (üst) -> 144 (alt) for left, 387 -> 373 for right
+    B = np.linalg.norm(p[2] - p[4]) # 158 (üst) -> 153 (alt) for left, 385 -> 380 for right
+
+    # Yatay mesafe (p1-p6)
+    C = np.linalg.norm(p[0] - p[3]) # 33 (yanak) -> 133 (burun) for left, 263 -> 362 for right
+
+    # EAR hesaplama
+    ear = (A + B) / (2.0 * C + 1e-6) # +1e-6 paydanın sıfır olmasını engeller
+    return ear
+
+# ***************************************************************
+# ***************************************************************
+
+
+# MediaPipe Sol ve Sağ Göz İşaret İndeksleri
+# Sol Göz: [p1, p2, p3, p6, p5, p4] sırasıyla [33, 160, 158, 133, 153, 144]
+LEFT_EYE_INDICES = [33, 160, 158, 133, 153, 144] 
+# Sağ Göz: [p1, p2, p3, p6, p5, p4] sırasıyla [263, 387, 385, 362, 380, 373]
+RIGHT_EYE_INDICES = [263, 387, 385, 362, 380, 373]
+EAR_THRESHOLD = 0.21 # Göz açıklık oranı eşiği
+
 
 while cap.isOpened():
     ret, frame = cap.read()
@@ -757,27 +775,6 @@ while cap.isOpened():
 
     if results.multi_face_landmarks:
         face_landmarks = results.multi_face_landmarks[0].landmark
-
-        # ==========================================================
-        # === YENİ ÖZELLİK: Sağ ve Sol Göz Açıklığı Tespiti (EAR) ===
-        # ==========================================================
-        left_ear = eye_aspect_ratio(face_landmarks, LEFT_EYE_INDICES, w, h)
-        right_ear = eye_aspect_ratio(face_landmarks, RIGHT_EYE_INDICES, w, h)
-        
-        # Determine status
-        left_eye_status = "Acik" if left_ear > EAR_THRESHOLD else "Kapali"
-        right_eye_status = "Acik" if right_ear > EAR_THRESHOLD else "Kapali"
-        
-        # Determine color for left and right eyes based on status
-        left_color = (0, 255, 0) if left_eye_status == "Acik" else (0, 0, 255)
-        right_color = (0, 255, 0) if right_eye_status == "Acik" else (0, 0, 255)
-
-        # Display status on frame
-        cv2.putText(frame, f"Sol Goz: {left_eye_status} ({left_ear:.2f})", (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, left_color, 2)
-        cv2.putText(frame, f"Sag Goz: {right_eye_status} ({right_ear:.2f})", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, right_color, 2)
-        # ==========================================================
-        # ==========================================================
-
 
         # Index for left iris center point (from MediaPipe's iris model)
         left_iris_idx = 468
@@ -795,14 +792,43 @@ while cap.isOpened():
             size=80
         )
 
+        # ***************************************************************
+        # ************* YENI: Göz Açık/Kapalı Tespiti *******************
+        # ***************************************************************
+
+        # Sol Göz İşaretlerini Al
+        left_eye_points = [face_landmarks[i] for i in LEFT_EYE_INDICES]
+        # Sağ Göz İşaretlerini Al
+        right_eye_points = [face_landmarks[i] for i in RIGHT_EYE_INDICES]
+
+        # EAR Hesapla
+        left_ear = eye_aspect_ratio(left_eye_points)
+        right_ear = eye_aspect_ratio(right_eye_points)
+
+        # Durum Tespiti
+        left_eye_status = "OPEN" if left_ear > EAR_THRESHOLD else "CLOSED"
+        right_eye_status = "OPEN" if right_ear > EAR_THRESHOLD else "CLOSED"
+        
+        # Ekran Çıktısı (LEFT)
+        left_text = f"LEFT: {left_eye_status} ({left_ear:.2f})"
+        left_color = (0, 255, 0) if left_eye_status == "OPEN" else (0, 0, 255)
+        cv2.putText(frame, left_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, left_color, 2)
+        
+        # Ekran Çıktısı (RIGHT)
+        right_text = f"RIGHT: {right_eye_status} ({right_ear:.2f})"
+        right_color = (0, 255, 0) if right_eye_status == "OPEN" else (0, 0, 255)
+        cv2.putText(frame, right_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, right_color, 2)
+
+        # ***************************************************************
+        # ***************************************************************
+
+
         # TODO compute this radius using canthus during calibration
         base_radius = 20  # radius at calibration distance
 
         x_iris_l = int(left_iris.x * w)
         y_iris_l = int(left_iris.y * h)
         # === LEFT EYE visualization ===
-        sphere_world_l = None
-        scaled_radius_l = None
         if not left_sphere_locked:
             cv2.circle(frame, (x_iris_l, y_iris_l), 10, (255, 25, 25), 2)
         else:
@@ -817,8 +843,6 @@ while cap.isOpened():
         x_iris_r = int(right_iris.x * w)
         y_iris_r = int(right_iris.y * h)
         # === RIGHT EYE visualization ===
-        sphere_world_r = None
-        scaled_radius_r = None
         if not right_sphere_locked:
             cv2.circle(frame, (x_iris_r, y_iris_r), 10, (25, 255, 25), 2)
         else:
@@ -833,14 +857,10 @@ while cap.isOpened():
         iris_3d_left = np.array([left_iris.x * w, left_iris.y * h, left_iris.z * w])
         iris_3d_right = np.array([right_iris.x * w, right_iris.y * h, right_iris.z * w])
         
-        avg_combined_direction = None
-
         if left_sphere_locked and right_sphere_locked:
             # ==== DRAW LEFT AND RIGHT GAZE ====
-            if sphere_world_l is not None:
-                draw_gaze(frame, sphere_world_l, iris_3d_left, scaled_radius_l, (55, 255, 0), 130)   
-            if sphere_world_r is not None:
-                draw_gaze(frame, sphere_world_r, iris_3d_right, scaled_radius_r, (55, 255, 0), 130)  
+            draw_gaze(frame, sphere_world_l, iris_3d_left, scaled_radius_l, (55, 255, 0), 130)   
+            draw_gaze(frame, sphere_world_r, iris_3d_right, scaled_radius_r, (55, 255, 0), 130)  
 
             # ==== COMPUTE COMBINED GAZE DIRECTION FOR SCREEN MAPPING ====
             # Calculate individual gaze directions
@@ -891,28 +911,30 @@ while cap.isOpened():
 
             # Center multiple lines of text
             texts = [
-                f"Ekran: ({screen_x}, {screen_y})",
-                f"Fare Kontrolu: {'ACIK' if mouse_control_enabled else 'KAPALI'}"
+                f"Screen: ({screen_x}, {screen_y})",
+                #f"Mouse: {'ON' if mouse_control_enabled else 'OFF'}"
             ]
 
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.7
             thickness = 2
             line_spacing = 30
-            y_start = 90 # Start below eye status texts
 
             for i, text in enumerate(texts):
                 (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
                 center_x = (w - text_width) // 2
-                y_pos = y_start + i * line_spacing
+                #center_y = (h // 2) + (i - len(texts)//2) * line_spacing
                 
-                color = (0, 255, 0) if mouse_control_enabled and i == 1 else (255, 255, 255)
-                cv2.putText(frame, text, (center_x, y_pos), font, font_scale, color, thickness, cv2.LINE_AA)
+                color = (0, 255, 0) if "Mouse: ON" not in text else (0, 255, 0) if mouse_control_enabled else (0, 0, 255)
+                # Orijinal konumda bırakılmıştı: cv2.putText(frame, text, (center_x, 30), font, font_scale, color, thickness)
+                # Mevcut kodda yalnızca tek bir satır vardı, onu koruyoruz.
+                if i == 0:
+                     cv2.putText(frame, text, (center_x, 30), font, font_scale, color, thickness)
+
 
         # Draw all landmark points in white
         for idx, lm in enumerate(face_landmarks):
             x, y = int(lm.x * w), int(lm.y * h)
-            # Draw tiny circles for landmarks, ensuring '0' size is handled gracefully
             cv2.circle(frame, (x, y), 0, (255, 255, 255), -1)
 
         # Smooth orbit controls each frame
@@ -927,16 +949,16 @@ while cap.isOpened():
         render_debug_view_orbit(
             h, w,
             head_center3d=head_center if 'head_center' in locals() else None,
-            sphere_world_l=sphere_world_l, # Now safely used from above
-            scaled_radius_l=scaled_radius_l,
-            sphere_world_r=sphere_world_r,
-            scaled_radius_r=scaled_radius_r,
+            sphere_world_l=sphere_world_l if left_sphere_locked and 'sphere_world_l' in locals() else None,
+            scaled_radius_l=scaled_radius_l if left_sphere_locked and 'scaled_radius_l' in locals() else None,
+            sphere_world_r=sphere_world_r if right_sphere_locked and 'sphere_world_r' in locals() else None,
+            scaled_radius_r=scaled_radius_r if right_sphere_locked and 'scaled_radius_r' in locals() else None,
             iris3d_l=iris_3d_left if 'iris_3d_left' in locals() else None,
             iris3d_r=iris_3d_right if 'iris_3d_right' in locals() else None,
             left_locked=left_sphere_locked,
             right_locked=right_sphere_locked,
             landmarks3d=landmarks3d,
-            combined_dir=avg_combined_direction, # Now safely used from above
+            combined_dir=avg_combined_direction if 'avg_combined_direction' in locals() else None,
             gaze_len=5230,
             monitor_corners=monitor_corners,
             monitor_center=monitor_center_w,
@@ -945,164 +967,149 @@ while cap.isOpened():
         )
 
 
-    cv2.imshow("Entegre Goz Takibi", frame)
+    cv2.imshow("Integrated Eye Tracking", frame)
 
     # Handle keyboard input
     if keyboard.is_pressed('f7'):
         mouse_control_enabled = not mouse_control_enabled
-        print(f"[Fare Kontrolu] {'ACIK' if mouse_control_enabled else 'KAPALI'}")
+        print(f"[Mouse Control] {'Enabled' if mouse_control_enabled else 'Disabled'}")
         time.sleep(0.3)  # debounce to prevent rapid toggling
 
     key = cv2.waitKey(1) & 0xFF
-    # Check if landmarks were detected before calibration attempts
-    if results.multi_face_landmarks:
-        # 'C' key calibration
-        if key == ord('c') and not (left_sphere_locked and right_sphere_locked):
-            # Recalculate variables used in calibration check to ensure they exist
-            current_nose_scale = compute_scale(nose_points_3d)
-            # Lock LEFT eye
-            left_sphere_local_offset = R_final.T @ (iris_3d_left - head_center)
-            camera_dir_world = np.array([0, 0, 1])
-            camera_dir_local = R_final.T @ camera_dir_world
-            left_sphere_local_offset += base_radius * camera_dir_local
-            left_calibration_nose_scale = current_nose_scale
-            left_sphere_locked = True
-
-            # Lock RIGHT eye
-            right_sphere_local_offset = R_final.T @ (iris_3d_right - head_center)
-            right_sphere_local_offset += base_radius * camera_dir_local  # use same camera_dir_local
-            right_calibration_nose_scale = current_nose_scale
-            right_sphere_locked = True
-
-            # === Create 3D monitor plane at calibration ===
-            # Compute instantaneous sphere positions at calibration distance (scale=1)
-            sphere_world_l_calib = head_center + R_final @ left_sphere_local_offset
-            sphere_world_r_calib = head_center + R_final @ right_sphere_local_offset
-
-            # Estimate a forward gaze direction from the two eyes
-            left_dir  = iris_3d_left  - sphere_world_l_calib
-            right_dir = iris_3d_right - sphere_world_r_calib
-            # Normalize (guard zero)
-            if np.linalg.norm(left_dir)  > 1e-9: left_dir  /= np.linalg.norm(left_dir)
-            if np.linalg.norm(right_dir) > 1e-9: right_dir /= np.linalg.norm(right_dir)
-            forward_hint = (left_dir + right_dir) * 0.5
-            if np.linalg.norm(forward_hint) > 1e-9:
-                forward_hint /= np.linalg.norm(forward_hint)
-            else:
-                forward_hint = None  # fallback to head frame
-
-            gaze_origin = (sphere_world_l_calib + sphere_world_r_calib) / 2
-            gaze_dir = forward_hint  # already normalized
-
-            monitor_corners, monitor_center_w, monitor_normal_w, units_per_cm = create_monitor_plane(
-                head_center, R_final, face_landmarks, w, h,
-                forward_hint=forward_hint,
-                gaze_origin=gaze_origin,
-                gaze_dir=gaze_dir
-            )
-
-            # Freeze the debug world's orbit pivot at the calibrated monitor center
-            debug_world_frozen = True
-            orbit_pivot_frozen = monitor_center_w.copy()
-            print("[Debug View] Dünya ekseni monitor merkezine sabitlendi.")
-
-            print(f"[Monitor] units_per_cm={units_per_cm:.3f}, center={monitor_center_w}, normal={monitor_normal_w}")
-
-
-            print("[Her Iki Kure Kilitlendi] Goz kuresi kalibrasyonu tamamlandi.")
-        
-        # 'S' key screen calibration
-        elif key == ord('s') and left_sphere_locked and right_sphere_locked:
-            # Screen calibration - user should look at center of screen when pressing 's'
-            # Check if all required gaze/sphere variables exist before proceeding
-            if ('sphere_world_l' in locals() and sphere_world_l is not None and
-                'sphere_world_r' in locals() and sphere_world_r is not None):
-                
-                # Get current gaze direction
-                left_gaze_dir = iris_3d_left - sphere_world_l
-                left_gaze_dir /= np.linalg.norm(left_gaze_dir)
-                right_gaze_dir = iris_3d_right - sphere_world_r
-                right_gaze_dir /= np.linalg.norm(right_gaze_dir)
-                current_combined_direction = (left_gaze_dir + right_gaze_dir) / 2
-                current_combined_direction /= np.linalg.norm(current_combined_direction)
-                
-                # Calculate what the raw angles would be without calibration
-                _, _, raw_yaw, raw_pitch = convert_gaze_to_screen_coordinates(
-                    current_combined_direction, 0, 0  # no calibration offset
-                )
-                
-                # Set calibration offsets to center the gaze
-                calibration_offset_yaw = 0 - raw_yaw
-                calibration_offset_pitch = 0 - raw_pitch
-                
-                print(f"[Ekran Kalibre Edildi] Ofset Yaw: {calibration_offset_yaw:.2f}, Ofset Pitch: {calibration_offset_pitch:.2f}")
-            else:
-                print("[Ekran Kalibrasyonu] Once goz kuresi (C) kalibrasyonunu yapin.")
-
-
-        # 'X' key marker drop
-        elif key == ord('x'):
-            # Drop a marker at the current gaze∩monitor point
-            if (monitor_corners is not None and monitor_center_w is not None and monitor_normal_w is not None
-                and left_sphere_locked and right_sphere_locked):
-                # Recompute current eye-sphere positions (scale-aware)
-                current_nose_scale = compute_scale(nose_points_3d)
-                scale_ratio_l = current_nose_scale / left_calibration_nose_scale if left_calibration_nose_scale else 1.0
-                scale_ratio_r = current_nose_scale / right_calibration_nose_scale if right_calibration_nose_scale else 1.0
-                sphere_world_l_now = head_center + R_final @ (left_sphere_local_offset * scale_ratio_l)
-                sphere_world_r_now = head_center + R_final @ (right_sphere_local_offset * scale_ratio_r)
-
-                # Combined gaze direction (use smoothed if available; otherwise instantaneous)
-                if 'avg_combined_direction' in locals() and avg_combined_direction is not None:
-                    D = _normalize(np.asarray(avg_combined_direction, dtype=float))
-                else:
-                    lg = iris_3d_left  - sphere_world_l_now
-                    rg = iris_3d_right - sphere_world_r_now
-                    if np.linalg.norm(lg) < 1e-9 or np.linalg.norm(rg) < 1e-9:
-                        print("[Isaretleyici] Goz yonu gecersiz; tekrar deneyin.")
-                        D = None
-                    else:
-                        lg /= np.linalg.norm(lg)
-                        rg /= np.linalg.norm(rg)
-                        D = _normalize(lg + rg)
-
-                if D is not None:
-                    O = (sphere_world_l_now + sphere_world_r_now) * 0.5
-                    C = np.asarray(monitor_center_w, dtype=float)
-                    N = _normalize(np.asarray(monitor_normal_w, dtype=float))
-                    denom = float(np.dot(N, D))
-                    if abs(denom) < 1e-6:
-                        print("[Isaretleyici] Goz isini monitore paralel; isaretleyici yok.")
-                    else:
-                        t = float(np.dot(N, (C - O)) / denom)
-                        if t <= 0.0:
-                            print("[Isaretleyici] Kesisme goz arkasinda; isaretleyici yok.")
-                        else:
-                            P = O + t * D  # world-space intersection
-                            # Map P to monitor local (a,b), then store if inside the quad
-                            p0, p1, p2, p3 = [np.asarray(p, dtype=float) for p in monitor_corners]
-                            u = p1 - p0
-                            v = p3 - p0
-                            u_len2 = float(np.dot(u, u))
-                            v_len2 = float(np.dot(v, v))
-                            if u_len2 > 1e-9 and v_len2 > 1e-9:
-                                wv = P - p0
-                                a = float(np.dot(wv, u) / u_len2)
-                                b = float(np.dot(wv, v) / v_len2)
-                                if 0.0 <= a <= 1.0 and 0.0 <= b <= 1.0:
-                                    gaze_markers.append((a, b))
-                                    print(f"[Isaretleyici] Eklendi a={a:.3f}, b={b:.3f}")
-                                else:
-                                    print("[Isaretleyici] Goz monitor uzerinde degil; isaretleyici yok.")
-                            else:
-                                print("[Isaretleyici] Monitor boyutlari dejenere; isaretleyici yok.")
-            else:
-                print("[Isaretleyici] Monitor/goz hazir degil; once merkez kalibrasyonunu (C) tamamlayin.")
-
-    # General 'Q' key for exit
     if key == ord('q'):
         break
+    elif key == ord('c') and not (left_sphere_locked and right_sphere_locked):
+        current_nose_scale = compute_scale(nose_points_3d)
+        # Lock LEFT eye
+        left_sphere_local_offset = R_final.T @ (iris_3d_left - head_center)
+        camera_dir_world = np.array([0, 0, 1])
+        camera_dir_local = R_final.T @ camera_dir_world
+        left_sphere_local_offset += base_radius * camera_dir_local
+        left_calibration_nose_scale = current_nose_scale
+        left_sphere_locked = True
+
+        # Lock RIGHT eye
+        right_sphere_local_offset = R_final.T @ (iris_3d_right - head_center)
+        right_sphere_local_offset += base_radius * camera_dir_local  # use same camera_dir_local
+        right_calibration_nose_scale = current_nose_scale
+        right_sphere_locked = True
+
+        # === Create 3D monitor plane at calibration ===
+        # Compute instantaneous sphere positions at calibration distance (scale=1)
+        sphere_world_l_calib = head_center + R_final @ left_sphere_local_offset
+        sphere_world_r_calib = head_center + R_final @ right_sphere_local_offset
+
+        # Estimate a forward gaze direction from the two eyes
+        left_dir  = iris_3d_left  - sphere_world_l_calib
+        right_dir = iris_3d_right - sphere_world_r_calib
+        # Normalize (guard zero)
+        if np.linalg.norm(left_dir)  > 1e-9: left_dir  /= np.linalg.norm(left_dir)
+        if np.linalg.norm(right_dir) > 1e-9: right_dir /= np.linalg.norm(right_dir)
+        forward_hint = (left_dir + right_dir) * 0.5
+        if np.linalg.norm(forward_hint) > 1e-9:
+            forward_hint /= np.linalg.norm(forward_hint)
+        else:
+            forward_hint = None  # fallback to head frame
+
+        gaze_origin = (sphere_world_l_calib + sphere_world_r_calib) / 2
+        gaze_dir = forward_hint  # already normalized
+
+        monitor_corners, monitor_center_w, monitor_normal_w, units_per_cm = create_monitor_plane(
+            head_center, R_final, face_landmarks, w, h,
+            forward_hint=forward_hint,
+            gaze_origin=gaze_origin,
+            gaze_dir=gaze_dir
+        )
+
+        # Freeze the debug world's orbit pivot at the calibrated monitor center
+        #global debug_world_frozen, orbit_pivot_frozen
+        debug_world_frozen = True
+        orbit_pivot_frozen = monitor_center_w.copy()
+        print("[Debug View] World pivot frozen at monitor center.")
+
+        print(f"[Monitor] units_per_cm={units_per_cm:.3f}, center={monitor_center_w}, normal={monitor_normal_w}")
+
+
+        print("[Both Spheres Locked] Eye sphere calibration complete.")
+    elif key == ord('s') and left_sphere_locked and right_sphere_locked:
+        # Screen calibration - user should look at center of screen when pressing 's'
+        # Get current gaze direction
+        left_gaze_dir = iris_3d_left - sphere_world_l
+        left_gaze_dir /= np.linalg.norm(left_gaze_dir)
+        right_gaze_dir = iris_3d_right - sphere_world_r
+        right_gaze_dir /= np.linalg.norm(right_gaze_dir)
+        current_combined_direction = (left_gaze_dir + right_gaze_dir) / 2
+        current_combined_direction /= np.linalg.norm(current_combined_direction)
+        
+        # Calculate what the raw angles would be without calibration
+        _, _, raw_yaw, raw_pitch = convert_gaze_to_screen_coordinates(
+            current_combined_direction, 0, 0  # no calibration offset
+        )
+        
+        # Set calibration offsets to center the gaze
+        calibration_offset_yaw = 0 - raw_yaw
+        calibration_offset_pitch = 0 - raw_pitch
+        
+        print(f"[Screen Calibrated] Offset Yaw: {calibration_offset_yaw:.2f}, Offset Pitch: {calibration_offset_pitch:.2f}")
+    elif key == ord('x'):
+        # Drop a marker at the current gaze∩monitor point
+        if (monitor_corners is not None and monitor_center_w is not None and monitor_normal_w is not None
+            and left_sphere_locked and right_sphere_locked):
+            # Recompute current eye-sphere positions (scale-aware)
+            current_nose_scale = compute_scale(nose_points_3d)
+            scale_ratio_l = current_nose_scale / left_calibration_nose_scale if left_calibration_nose_scale else 1.0
+            scale_ratio_r = current_nose_scale / right_calibration_nose_scale if right_calibration_nose_scale else 1.0
+            sphere_world_l_now = head_center + R_final @ (left_sphere_local_offset * scale_ratio_l)
+            sphere_world_r_now = head_center + R_final @ (right_sphere_local_offset * scale_ratio_r)
+
+            # Combined gaze direction (use smoothed if available; otherwise instantaneous)
+            if 'avg_combined_direction' in locals() and avg_combined_direction is not None:
+                D = _normalize(np.asarray(avg_combined_direction, dtype=float))
+            else:
+                lg = iris_3d_left  - sphere_world_l_now
+                rg = iris_3d_right - sphere_world_r_now
+                if np.linalg.norm(lg) < 1e-9 or np.linalg.norm(rg) < 1e-9:
+                    print("[Marker] Gaze direction invalid; try again.")
+                    D = None
+                else:
+                    lg /= np.linalg.norm(lg)
+                    rg /= np.linalg.norm(rg)
+                    D = _normalize(lg + rg)
+
+            if D is not None:
+                O = (sphere_world_l_now + sphere_world_r_now) * 0.5
+                C = np.asarray(monitor_center_w, dtype=float)
+                N = _normalize(np.asarray(monitor_normal_w, dtype=float))
+                denom = float(np.dot(N, D))
+                if abs(denom) < 1e-6:
+                    print("[Marker] Gaze ray parallel to monitor; no marker.")
+                else:
+                    t = float(np.dot(N, (C - O)) / denom)
+                    if t <= 0.0:
+                        print("[Marker] Intersection behind/at eye; no marker.")
+                    else:
+                        P = O + t * D  # world-space intersection
+                        # Map P to monitor local (a,b), then store if inside the quad
+                        p0, p1, p2, p3 = [np.asarray(p, dtype=float) for p in monitor_corners]
+                        u = p1 - p0
+                        v = p3 - p0
+                        u_len2 = float(np.dot(u, u))
+                        v_len2 = float(np.dot(v, v))
+                        if u_len2 > 1e-9 and v_len2 > 1e-9:
+                            wv = P - p0
+                            a = float(np.dot(wv, u) / u_len2)
+                            b = float(np.dot(wv, v) / v_len2)
+                            if 0.0 <= a <= 1.0 and 0.0 <= b <= 1.0:
+                                gaze_markers.append((a, b))
+                                print(f"[Marker] Added at a={a:.3f}, b={b:.3f}")
+                            else:
+                                print("[Marker] Gaze not on monitor; no marker.")
+                        else:
+                            print("[Marker] Monitor dimensions degenerate; no marker.")
+        else:
+            print("[Marker] Monitor/gaze not ready; complete center calibration first.")
 
 
 cap.release()
+
 cv2.destroyAllWindows()
